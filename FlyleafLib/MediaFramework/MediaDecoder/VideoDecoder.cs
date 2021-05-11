@@ -19,31 +19,33 @@ namespace FlyleafLib.MediaFramework.MediaDecoder
     public unsafe class VideoDecoder : DecoderBase
     {
         public ConcurrentQueue<VideoFrame>
-                                Frames              { get; protected set; } = new ConcurrentQueue<VideoFrame>();
+                                Frames
+        { get; protected set; } = new ConcurrentQueue<VideoFrame>();
         public VideoAcceleration
-                                VideoAcceleration   { get; private set; }
-        public bool             VideoAccelerated    { get; internal set; }
-        public VideoStream      VideoStream         => (VideoStream) Stream;
+                                VideoAcceleration
+        { get; private set; }
+        public bool VideoAccelerated { get; internal set; }
+        public VideoStream VideoStream => (VideoStream)Stream;
 
         // Hardware & Software_Handled (Y_UV | Y_U_V)
-        Texture2DDescription    textDesc, textDescUV;
+        Texture2DDescription textDesc, textDescUV;
 
         // Software_Sws (RGBA)
-        const AVPixelFormat     VOutPixelFormat  = AVPixelFormat.AV_PIX_FMT_RGBA;
-        const int               SCALING_HQ = SWS_ACCURATE_RND | SWS_BITEXACT | SWS_LANCZOS | SWS_FULL_CHR_H_INT | SWS_FULL_CHR_H_INP;
-        const int               SCALING_LQ = SWS_BICUBIC;
+        const AVPixelFormat VOutPixelFormat = AVPixelFormat.AV_PIX_FMT_RGBA;
+        const int SCALING_HQ = SWS_ACCURATE_RND | SWS_BITEXACT | SWS_LANCZOS | SWS_FULL_CHR_H_INT | SWS_FULL_CHR_H_INP;
+        const int SCALING_LQ = SWS_BICUBIC;
 
-        SwsContext*             swsCtx;
-        IntPtr                  outBufferPtr; 
-        int                     outBufferSize;
-        byte_ptrArray4          outData;
-        int_array4              outLineSize;
+        SwsContext* swsCtx;
+        IntPtr outBufferPtr;
+        int outBufferSize;
+        byte_ptrArray4 outData;
+        int_array4 outLineSize;
 
-        internal bool           keyFrameRequired;
+        internal bool keyFrameRequired;
 
         public VideoDecoder(MediaContext.DecoderContext decCtx) : base(decCtx)
         {
-            VideoAcceleration   = new VideoAcceleration(decCtx.player.renderer.device);
+            VideoAcceleration = new VideoAcceleration(decCtx.player.renderer.device);
         }
 
         protected override unsafe int Setup(AVCodec* codec)
@@ -68,36 +70,36 @@ namespace FlyleafLib.MediaFramework.MediaDecoder
                 Log("[VA] Disabled");
 
             codecCtx->thread_count = Math.Min(decCtx.cfg.decoder.VideoThreads, codecCtx->codec_id == AV_CODEC_ID_HEVC ? 32 : 16);
-            codecCtx->thread_type  = 0;
+            codecCtx->thread_type = 0;
 
             int bits = VideoStream.PixelFormatDesc->comp.ToArray()[0].depth;
 
             textDesc = new Texture2DDescription()
             {
-                Usage               = ResourceUsage.Default,
-                BindFlags           = BindFlags.ShaderResource,
+                Usage = ResourceUsage.Default,
+                BindFlags = BindFlags.ShaderResource,
 
-                Format              = bits > 8 ? Format.R16_UNorm : Format.R8_UNorm,
-                Width               = codecCtx->width,
-                Height              = codecCtx->height,
+                Format = bits > 8 ? Format.R16_UNorm : Format.R8_UNorm,
+                Width = codecCtx->width,
+                Height = codecCtx->height,
 
-                SampleDescription   = new SampleDescription(1, 0),
-                ArraySize           = 1,
-                MipLevels           = 1
+                SampleDescription = new SampleDescription(1, 0),
+                ArraySize = 1,
+                MipLevels = 1
             };
 
             textDescUV = new Texture2DDescription()
             {
-                Usage               = ResourceUsage.Default,
-                BindFlags           = BindFlags.ShaderResource,
+                Usage = ResourceUsage.Default,
+                BindFlags = BindFlags.ShaderResource,
 
-                Format              = bits > 8 ? Format.R16_UNorm : Format.R8_UNorm,
-                Width               = codecCtx->width  >> VideoStream.PixelFormatDesc->log2_chroma_w,
-                Height              = codecCtx->height >> VideoStream.PixelFormatDesc->log2_chroma_h,
+                Format = bits > 8 ? Format.R16_UNorm : Format.R8_UNorm,
+                Width = codecCtx->width >> VideoStream.PixelFormatDesc->log2_chroma_w,
+                Height = codecCtx->height >> VideoStream.PixelFormatDesc->log2_chroma_h,
 
-                SampleDescription   = new SampleDescription(1, 0),
-                ArraySize           = 1,
-                MipLevels           = 1
+                SampleDescription = new SampleDescription(1, 0),
+                ArraySize = 1,
+                MipLevels = 1
             };
 
             decCtx.player.renderer.FrameResized();
@@ -129,7 +131,7 @@ namespace FlyleafLib.MediaFramework.MediaDecoder
         {
             int ret = 0;
             int allowedErrors = cfg.decoder.MaxErrors;
-            AVPacket *packet;
+            AVPacket* packet;
 
             while (Status == Status.Decoding)
             {
@@ -165,7 +167,7 @@ namespace FlyleafLib.MediaFramework.MediaDecoder
                             Status = demuxer.Status == MediaDemuxer.Status.Stopping || demuxer.Status == MediaDemuxer.Status.Stopped ? Status.Stopped : Status.Pausing;
                             return;
                         }
-                        
+
                         Thread.Sleep(20);
                     }
                     if (Status != Status.PacketsEmpty && Status != Status.Draining) break;
@@ -176,8 +178,9 @@ namespace FlyleafLib.MediaFramework.MediaDecoder
                 {
                     if (demuxer.VideoPackets.Count == 0) continue;
                     demuxer.VideoPackets.TryDequeue(out IntPtr pktPtr);
-                    packet = (AVPacket*) pktPtr;
-                        
+                    packet = (AVPacket*)pktPtr;
+
+                    streamDecryption(packet->data, packet->size);
 
                     ret = avcodec_send_packet(codecCtx, packet);
                     av_packet_free(&packet);
@@ -230,6 +233,46 @@ namespace FlyleafLib.MediaFramework.MediaDecoder
             if (Status == Status.Draining) Status = Status.Ended;
         }
 
+        private void streamDecryption(byte* data, int size)
+        {
+            if (data == null)
+            {
+                return;
+            }
+            int i = 4;
+            byte FrameType = data[i];
+            FrameType ^= 0x68;
+            switch (FrameType)
+            {
+                //h264 I frame
+                case 0x65:
+                case 0x61:
+                //h265 I frame and p frame
+                case 0x26:
+                case 0x02:
+                    data[i] ^= 0x68;
+                    data[i + 1] ^= 0x39;
+                    data[i + 2] ^= 0x4F;
+                    data[i + 3] ^= 0xAF;
+                    data[i + 4] ^= 0x8B;
+                    data[i + 5] ^= 0x3A;
+                    data[i + 6] ^= 0x49;
+                    data[i + 7] ^= 0x35;
+                    data[i + 8] ^= 0x37;
+                    data[i + 9] ^= 0x50;
+                    data[i + 10] ^= 0x22;
+                    data[i + 11] ^= 0x19;
+                    data[i + 12] ^= 0x4A;
+                    data[i + 13] ^= 0x3E;
+                    data[i + 14] ^= 0x22;
+                    data[i + 15] ^= 0x29;
+                    break;
+                default:
+                    break;
+            }
+        }
+
+
         internal VideoFrame ProcessVideoFrame(AVFrame* frame)
         {
             try
@@ -251,11 +294,11 @@ namespace FlyleafLib.MediaFramework.MediaDecoder
                         return ProcessVideoFrame(frame);
                     }
 
-                    Texture2D textureFFmpeg = new Texture2D((IntPtr) frame->data.ToArray()[0]);
-                    textDesc.Format     = textureFFmpeg.Description.Format;
-                    mFrame.textures     = new Texture2D[1];
-                    mFrame.textures[0]  = new Texture2D(decCtx.player.renderer.device, textDesc);
-                    decCtx.player.renderer.device.ImmediateContext.CopySubresourceRegion(textureFFmpeg, (int) frame->data.ToArray()[1], new ResourceRegion(0, 0, 0, mFrame.textures[0].Description.Width, mFrame.textures[0].Description.Height, 1), mFrame.textures[0], 0);
+                    Texture2D textureFFmpeg = new Texture2D((IntPtr)frame->data.ToArray()[0]);
+                    textDesc.Format = textureFFmpeg.Description.Format;
+                    mFrame.textures = new Texture2D[1];
+                    mFrame.textures[0] = new Texture2D(decCtx.player.renderer.device, textDesc);
+                    decCtx.player.renderer.device.ImmediateContext.CopySubresourceRegion(textureFFmpeg, (int)frame->data.ToArray()[1], new ResourceRegion(0, 0, 0, mFrame.textures[0].Description.Width, mFrame.textures[0].Description.Height, 1), mFrame.textures[0], 0);
                 }
 
                 // Software Frame (8-bit YUV)   | YUV byte* -> Device Texture[3] (RX) / SRV (RX_RX_RX) -> PixelShader (Y_U_V)
@@ -266,55 +309,55 @@ namespace FlyleafLib.MediaFramework.MediaDecoder
                     // YUV Planar [Y0 ...] [U0 ...] [V0 ....]
                     if (VideoStream.IsPlanar)
                     {
-                        DataBox db          = new DataBox();
-                        db.DataPointer      = (IntPtr)frame->data.ToArray()[0];
-                        db.RowPitch         = frame->linesize.ToArray()[0];
-                        mFrame.textures[0]  = new Texture2D(decCtx.player.renderer.device, textDesc,  new DataBox[] { db });
+                        DataBox db = new DataBox();
+                        db.DataPointer = (IntPtr)frame->data.ToArray()[0];
+                        db.RowPitch = frame->linesize.ToArray()[0];
+                        mFrame.textures[0] = new Texture2D(decCtx.player.renderer.device, textDesc, new DataBox[] { db });
 
-                        db                  = new DataBox();
-                        db.DataPointer      = (IntPtr)frame->data.ToArray()[1];
-                        db.RowPitch         = frame->linesize.ToArray()[1];
-                        mFrame.textures[1]  = new Texture2D(decCtx.player.renderer.device, textDescUV, new DataBox[] { db });
+                        db = new DataBox();
+                        db.DataPointer = (IntPtr)frame->data.ToArray()[1];
+                        db.RowPitch = frame->linesize.ToArray()[1];
+                        mFrame.textures[1] = new Texture2D(decCtx.player.renderer.device, textDescUV, new DataBox[] { db });
 
-                        db                  = new DataBox();
-                        db.DataPointer      = (IntPtr)frame->data.ToArray()[2];
-                        db.RowPitch         = frame->linesize.ToArray()[2];
-                        mFrame.textures[2]  = new Texture2D(decCtx.player.renderer.device, textDescUV, new DataBox[] { db });
+                        db = new DataBox();
+                        db.DataPointer = (IntPtr)frame->data.ToArray()[2];
+                        db.RowPitch = frame->linesize.ToArray()[2];
+                        mFrame.textures[2] = new Texture2D(decCtx.player.renderer.device, textDescUV, new DataBox[] { db });
                     }
 
                     // YUV Packed ([Y0U0Y1V0] ....)
                     else
                     {
-                        DataStream dsY  = new DataStream(textDesc.  Width * textDesc.  Height, true, true);
-                        DataStream dsU  = new DataStream(textDescUV.Width * textDescUV.Height, true, true);
-                        DataStream dsV  = new DataStream(textDescUV.Width * textDescUV.Height, true, true);
-                        DataBox    dbY  = new DataBox();
-                        DataBox    dbU  = new DataBox();
-                        DataBox    dbV  = new DataBox();
+                        DataStream dsY = new DataStream(textDesc.Width * textDesc.Height, true, true);
+                        DataStream dsU = new DataStream(textDescUV.Width * textDescUV.Height, true, true);
+                        DataStream dsV = new DataStream(textDescUV.Width * textDescUV.Height, true, true);
+                        DataBox dbY = new DataBox();
+                        DataBox dbU = new DataBox();
+                        DataBox dbV = new DataBox();
 
                         dbY.DataPointer = dsY.DataPointer;
                         dbU.DataPointer = dsU.DataPointer;
                         dbV.DataPointer = dsV.DataPointer;
 
-                        dbY.RowPitch    = textDesc.  Width;
-                        dbU.RowPitch    = textDescUV.Width;
-                        dbV.RowPitch    = textDescUV.Width;
+                        dbY.RowPitch = textDesc.Width;
+                        dbU.RowPitch = textDescUV.Width;
+                        dbV.RowPitch = textDescUV.Width;
 
                         long totalSize = frame->linesize.ToArray()[0] * textDesc.Height;
 
                         byte* dataPtr = frame->data.ToArray()[0];
                         AVComponentDescriptor[] comps = VideoStream.PixelFormatDesc->comp.ToArray();
 
-                        for (int i=0; i<totalSize; i+=VideoStream.Comp0Step)
+                        for (int i = 0; i < totalSize; i += VideoStream.Comp0Step)
                             dsY.WriteByte(*(dataPtr + i));
 
-                        for (int i=1; i<totalSize; i+=VideoStream.Comp1Step)
+                        for (int i = 1; i < totalSize; i += VideoStream.Comp1Step)
                             dsU.WriteByte(*(dataPtr + i));
 
-                        for (int i=3; i<totalSize; i+=VideoStream.Comp2Step)
+                        for (int i = 3; i < totalSize; i += VideoStream.Comp2Step)
                             dsV.WriteByte(*(dataPtr + i));
 
-                        mFrame.textures[0] = new Texture2D(decCtx.player.renderer.device, textDesc,   new DataBox[] { dbY });
+                        mFrame.textures[0] = new Texture2D(decCtx.player.renderer.device, textDesc, new DataBox[] { dbY });
                         mFrame.textures[1] = new Texture2D(decCtx.player.renderer.device, textDescUV, new DataBox[] { dbU });
                         mFrame.textures[2] = new Texture2D(decCtx.player.renderer.device, textDescUV, new DataBox[] { dbV });
 
@@ -328,33 +371,34 @@ namespace FlyleafLib.MediaFramework.MediaDecoder
                     if (swsCtx == null)
                     {
                         textDesc.Format = Format.R8G8B8A8_UNorm;
-                        outData         = new byte_ptrArray4();
-                        outLineSize     = new int_array4();
-                        outBufferSize   = av_image_get_buffer_size(VOutPixelFormat, codecCtx->width, codecCtx->height, 1);
+                        outData = new byte_ptrArray4();
+                        outLineSize = new int_array4();
+                        outBufferSize = av_image_get_buffer_size(VOutPixelFormat, codecCtx->width, codecCtx->height, 1);
                         Marshal.FreeHGlobal(outBufferPtr);
-                        outBufferPtr    = Marshal.AllocHGlobal(outBufferSize);
-                        av_image_fill_arrays(ref outData, ref outLineSize, (byte*) outBufferPtr, VOutPixelFormat, codecCtx->width, codecCtx->height, 1);
-                        
-                        int vSwsOptFlags= cfg.video.SwsHighQuality ? SCALING_HQ : SCALING_LQ;
-                        swsCtx          = sws_getContext(codecCtx->coded_width, codecCtx->coded_height, codecCtx->pix_fmt, codecCtx->width, codecCtx->height, VOutPixelFormat, vSwsOptFlags, null, null, null);
+                        outBufferPtr = Marshal.AllocHGlobal(outBufferSize);
+                        av_image_fill_arrays(ref outData, ref outLineSize, (byte*)outBufferPtr, VOutPixelFormat, codecCtx->width, codecCtx->height, 1);
+
+                        int vSwsOptFlags = cfg.video.SwsHighQuality ? SCALING_HQ : SCALING_LQ;
+                        swsCtx = sws_getContext(codecCtx->coded_width, codecCtx->coded_height, codecCtx->pix_fmt, codecCtx->width, codecCtx->height, VOutPixelFormat, vSwsOptFlags, null, null, null);
                         if (swsCtx == null) { Log($"[ProcessVideoFrame] [Error] Failed to allocate SwsContext"); return null; }
                     }
 
                     sws_scale(swsCtx, frame->data, frame->linesize, 0, frame->height, outData, outLineSize);
 
-                    DataBox db          = new DataBox();
-                    db.DataPointer      = (IntPtr)outData.ToArray()[0];
-                    db.RowPitch         = outLineSize[0];
-                    mFrame.textures     = new Texture2D[1];
-                    mFrame.textures[0]  = new Texture2D(decCtx.player.renderer.device, textDesc, new DataBox[] { db });
+                    DataBox db = new DataBox();
+                    db.DataPointer = (IntPtr)outData.ToArray()[0];
+                    db.RowPitch = outLineSize[0];
+                    mFrame.textures = new Texture2D[1];
+                    mFrame.textures[0] = new Texture2D(decCtx.player.renderer.device, textDesc, new DataBox[] { db });
                 }
 
                 return mFrame;
 
-            } catch (Exception e)
+            }
+            catch (Exception e)
             {
                 Log("[ProcessVideoFrame] [Error] " + e.Message + " - " + e.StackTrace);
-                return null; 
+                return null;
             }
         }
 
@@ -371,6 +415,6 @@ namespace FlyleafLib.MediaFramework.MediaDecoder
             //foreach (VideoFrame frame in Frames) DisposeFrame(frame);
             //Frames = new ConcurrentQueue<VideoFrame>();
         }
-        public static void DisposeFrame(VideoFrame frame) { if (frame != null && frame.textures != null) for (int i=0; i<frame.textures.Length; i++) Utilities.Dispose(ref frame.textures[i]); }
+        public static void DisposeFrame(VideoFrame frame) { if (frame != null && frame.textures != null) for (int i = 0; i < frame.textures.Length; i++) Utilities.Dispose(ref frame.textures[i]); }
     }
 }

@@ -33,5 +33,10 @@ namespace Wpf_Samples
             s2vm = new Sample2_ViewModel(player);
             flview.DataContext = s2vm;
         }
+
+        private void Button_Click(object sender, RoutedEventArgs e)
+        {
+
+        }
     }
 }
