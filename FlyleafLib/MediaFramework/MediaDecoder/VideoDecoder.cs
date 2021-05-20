@@ -13,6 +13,7 @@ using SharpDX.DXGI;
 using FlyleafLib.MediaStream;
 using FlyleafLib.MediaFramework.MediaFrame;
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 
 namespace FlyleafLib.MediaFramework.MediaDecoder
 {
@@ -180,7 +181,8 @@ namespace FlyleafLib.MediaFramework.MediaDecoder
                     demuxer.VideoPackets.TryDequeue(out IntPtr pktPtr);
                     packet = (AVPacket*)pktPtr;
 
-                    streamDecryption(packet->data, packet->size);
+                    //streamDecryption(packet->data, packet->size);
+                    Decryption(packet->data);
 
                     ret = avcodec_send_packet(codecCtx, packet);
                     av_packet_free(&packet);
@@ -231,6 +233,61 @@ namespace FlyleafLib.MediaFramework.MediaDecoder
             } // While Decoding
 
             if (Status == Status.Draining) Status = Status.Ended;
+        }
+
+
+        void Decryption(byte* data, int len = 16)
+        {
+            if (data == null)
+            {
+                return;
+            }
+            byte streamEncCrypFlag = 0x68;
+
+            int i = 4;
+
+            //解析第5个字节是否为加密流
+            switch (data[i] ^ streamEncCrypFlag)
+            {
+                //h264 I frame
+                case 0x65:
+                case 0x61:
+                //h265 I frame and p frame
+                case 0x26:
+                case 0x02:
+                    //后面16个字节使用aes256解密密 16字节数据
+                    data[i] ^= streamEncCrypFlag;
+                    Decryption2(&data[i + 1]);
+                    break;
+                default:
+                    break;
+            }
+
+
+
+        }
+        void Decryption2(byte* buf, int len = 16)
+        {
+
+            var tmpArr = new byte[len];
+            for (int i = 0; i < len; i++)
+            {
+                tmpArr[i] = *(buf + i);
+            }
+            var aes_key = new byte[32]  {0x12,0x23,0xaf,0x14,0x67,0x78,0xea,0x44,0x89,0xfc,0xcc,0xff,0x23,
+            0xee,0x28,0x19,0x90,0x81,0xaa,0x99,0x24,0x14,0x9f,0x9d,0x8a,0x32,0x41,0x8a,0x11,0xa8,0xe1,0xf9};
+
+            RijndaelManaged rDel = new RijndaelManaged();
+            rDel.Key = aes_key;
+            rDel.Mode = CipherMode.ECB;
+            rDel.Padding = PaddingMode.None;
+            ICryptoTransform cTransform = rDel.CreateDecryptor();
+            var resultArray = cTransform.TransformFinalBlock(tmpArr, 0, len);
+
+            for (int i = 0; i < len; i++)
+            {
+                *(buf + i) = resultArray[i];
+            }
         }
 
         private void streamDecryption(byte* data, int size)
